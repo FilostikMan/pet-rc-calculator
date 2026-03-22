@@ -9,8 +9,35 @@ from scipy import stats
 st.set_page_config(
     page_title="Калькулятор коэффициента восстановления для ПЭТ",
     page_icon="🔬",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
+
+
+# --- КЭШИРОВАНИЕ ДЛЯ БЫСТРОЙ ЗАГРУЗКИ ---
+@st.cache_data
+def load_data():
+    return pd.read_csv(pd.io.common.StringIO(DATA_RAW))
+
+
+@st.cache_data
+def precompute_metrics():
+    df = load_data()
+    df['RC_pred'] = df.apply(lambda row: calculate_rc(row['d'], row['TBR_prakt']), axis=1)
+    df['Error'] = abs(df['RC'] - df['RC_pred'])
+    df['Rel_Error'] = (df['Error'] / df['RC']) * 100
+
+    r_value, p_value = stats.pearsonr(df['RC'], df['RC_pred'])
+    ss_res = ((df['RC'] - df['RC_pred']) ** 2).sum()
+    ss_tot = ((df['RC'] - df['RC'].mean()) ** 2).sum()
+    r_squared = 1 - (ss_res / ss_tot)
+
+    mae = df['Error'].mean()
+    mre = df['Rel_Error'].mean()
+    rmse = np.sqrt(((df['RC'] - df['RC_pred']) ** 2).mean())
+
+    return df, r_value, r_squared, mae, mre, rmse
+
 
 # --- ДАННЫЕ И МОДЕЛЬ ---
 MODEL_PARAMS = {
@@ -56,8 +83,6 @@ d,TBR_teor,TBR_prakt,RC
 10,20,10.7636085201169,0.495725357
 """
 
-df = pd.read_csv(pd.io.common.StringIO(DATA_RAW))
-
 
 def calculate_rc(diameter, tbr):
     """Расчет RC по формуле"""
@@ -75,20 +100,23 @@ def calculate_rc(diameter, tbr):
 st.sidebar.header("📥 Диаметр патологического очага")
 st.sidebar.markdown("Введите параметры для расчета коэффициента восстановления (RC).")
 
+# Ползунки с немедленным обновлением
 d_input = st.sidebar.slider(
     "Диаметр очага (d), мм",
     min_value=10.0,
     max_value=37.0,
     value=22.0,
-    step=0.1
+    step=0.1,
+    key="diameter_slider"
 )
 
 tbr_input = st.sidebar.number_input(
-    "Практическое соотношение объёмных активностей очаг/фон TBR",
+    "Практическое соотношение объёмных активностей очаг/фон TBR (TBR_prakt)",
     min_value=0.0,
     max_value=25.0,
     value=8.0,
-    step=0.1
+    step=0.1,
+    key="tbr_input"
 )
 
 # --- ОСНОВНАЯ ЧАСТЬ ---
@@ -98,41 +126,64 @@ st.markdown("""
 Расчёт основан на полиномиальной регрессии 2-й степени по данным фантома NEMA.
 """)
 
-# 1. РАСЧЁТ И РЕЗУЛЬТАТ
+# 1. РАСЧЁТ И РЕЗУЛЬТАТ (обновляется в реальном времени)
 rc_result = calculate_rc(d_input, tbr_input)
 
-col1, col2, col3 = st.columns([1, 2, 1])
+# Контейнер для динамического обновления
+result_container = st.container()
 
-with col1:
-    st.metric(label="Расчётный RC", value=f"{rc_result:.4f}")
+with result_container:
+    col1, col2, col3 = st.columns([1, 2, 1])
 
-with col2:
-    fig_gauge = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=rc_result,
-        domain={'x': [0, 1], 'y': [0, 1]},
-        title={'text': "Коэффициент восстановления", 'font': {'size': 24}},
-        gauge={
-            'axis': {'range': [None, 1]},
-            'bar': {'color': "darkblue"},
-            'steps': [
-                {'range': [0, 0.5], 'color': "#ffcccc"},
-                {'range': [0.5, 0.8], 'color': "#fff3cd"},
-                {'range': [0.8, 1], 'color': "#d4edda"}],
-            'threshold': {
-                'line': {'color': "red", 'width': 4},
-                'thickness': 0.75,
-                'value': 0.8}}))
-    fig_gauge.update_layout(height=250, margin=dict(l=20, r=20, t=40, b=20))
-    st.plotly_chart(fig_gauge, use_container_width=True)
+    with col1:
+        # Метрика обновляется мгновенно
+        st.metric(
+            label="📊 Расчётный RC",
+            value=f"{rc_result:.4f}",
+            delta=f"{rc_result * 100:.1f}%",
+            delta_color="normal"
+        )
+        st.info(f"**Ввод:** d = {d_input:.1f} мм, TBR = {tbr_input:.1f}")
 
-with col3:
-    if rc_result >= 0.8:
-        st.success("**Отлично**\nПотери активности минимальны.")
-    elif rc_result >= 0.5:
-        st.warning("**Средне**\nТребуется коррекция активности.")
-    else:
-        st.error("**Низкое**\nЗначительные потери сигнала. Коррекция критична.")
+    with col2:
+        # Спидометр с плавной анимацией
+        fig_gauge = go.Figure(go.Indicator(
+            mode="gauge+number+delta",
+            value=rc_result,
+            domain={'x': [0, 1], 'y': [0, 1]},
+            title={'text': "<b>Коэффициент восстановления</b>", 'font': {'size': 28, 'color': 'darkblue'}},
+            delta={'reference': 0.8, 'increasing': {'color': "green"}, 'decreasing': {'color': "red"}},
+            gauge={
+                'axis': {'range': [None, 1], 'tickwidth': 2, 'tickcolor': "darkblue"},
+                'bar': {'color': "darkblue", 'thickness': 0.5},
+                'bgcolor': "white",
+                'borderwidth': 2,
+                'bordercolor': "gray",
+                'steps': [
+                    {'range': [0, 0.5], 'color': "#ffcccc"},
+                    {'range': [0.5, 0.8], 'color': "#fff3cd"},
+                    {'range': [0.8, 1], 'color': "#d4edda"}],
+                'threshold': {
+                    'line': {'color': "red", 'width': 6},
+                    'thickness': 0.75,
+                    'value': 0.8}}))
+
+        fig_gauge.update_layout(
+            height=300,
+            margin=dict(l=20, r=20, t=50, b=20),
+            paper_bgcolor="white",
+            font={'color': "darkgray", 'size': 16}
+        )
+        st.plotly_chart(fig_gauge, use_container_width=True, key="gauge_chart")
+
+    with col3:
+        # Динамический статус
+        if rc_result >= 0.8:
+            st.success("**✅ Отлично**\n\nПотери активности минимальны.\n\nКоррекция не требуется.")
+        elif rc_result >= 0.5:
+            st.warning("**⚠️ Средне**\n\nТребуется коррекция активности.\n\nПотери 20-50%.")
+        else:
+            st.error("**❌ Низкое**\n\nЗначительные потери сигнала.\n\nКоррекция критична!")
 
 st.divider()
 
@@ -165,47 +216,31 @@ with tab1:
 with tab2:
     st.subheader("Сравнение фактических и предсказанных значений")
 
-    df['RC_pred'] = df.apply(lambda row: calculate_rc(row['d'], row['TBR_prakt']), axis=1)
+    # Загрузка кэшированных данных
+    df, r_value, r_squared, mae, mre, rmse = precompute_metrics()
 
-    # === РАСЧЁТ МЕТРИК КАЧЕСТВА МОДЕЛИ ===
-    df['Error'] = abs(df['RC'] - df['RC_pred'])  # Абсолютная погрешность
-    df['Rel_Error'] = (df['Error'] / df['RC']) * 100  # Относительная погрешность (%)
+    # Линия тренда (вручную, без statsmodels)
+    x_min, x_max = df['RC'].min(), df['RC'].max()
+    x_line = np.linspace(x_min, x_max, 100)
+    slope, intercept, _, _, _ = stats.linregress(df['RC'], df['RC_pred'])
+    y_line = slope * x_line + intercept
 
-    # Коэффициент корреляции Пирсона (R)
-    r_value, p_value = stats.pearsonr(df['RC'], df['RC_pred'])
-
-    # Коэффициент детерминации (R²)
-    ss_res = ((df['RC'] - df['RC_pred']) ** 2).sum()
-    ss_tot = ((df['RC'] - df['RC'].mean()) ** 2).sum()
-    r_squared = 1 - (ss_res / ss_tot)
-
-    # Остальные метрики
-    mae = df['Error'].mean()
-    mre = df['Rel_Error'].mean()
-    rmse = np.sqrt(((df['RC'] - df['RC_pred']) ** 2).mean())
-
-    # === ГРАФИК С R² НА ГРАФИКЕ ===
+    # === ГРАФИК ===
     fig_scatter = px.scatter(df, x='RC', y='RC_pred',
-                             trendline="ols",
                              labels={'RC': 'Фактический RC', 'RC_pred': 'Предсказанный RC'},
                              title='Фактические vs Предсказанные значения',
                              color='d',
                              color_discrete_sequence=px.colors.sequential.Plasma)
 
-    fig_scatter.add_shape(type="line", line=dict(dash="dash", color="black"),
-                          x0=0, y0=0, x1=1, y1=1)
+    # Линия идеального совпадения (y=x)
+    fig_scatter.add_shape(type="line", line=dict(dash="dash", color="black", width=2),
+                          x0=x_min, y0=x_min, x1=x_max, y1=x_max,
+                          name='Идеальное совпадение')
 
-    # Добавляем текст с метриками на график
-    fig_scatter.add_annotation(
-        text=f"R² = {r_squared:.4f}<br>R = {r_value:.4f}",
-        xref="paper", yref="paper",
-        x=0.02, y=0.98,
-        showarrow=False,
-        bgcolor="white",
-        bordercolor="black",
-        borderwidth=1,
-        font=dict(size=14)
-    )
+    # Линия регрессии
+    fig_scatter.add_trace(go.Scatter(x=x_line, y=y_line, mode='lines',
+                                     line=dict(color='red', dash='dot', width=2),
+                                     name=f'Линия тренда (R²={r_squared:.4f})'))
 
     st.plotly_chart(fig_scatter, use_container_width=True)
 
