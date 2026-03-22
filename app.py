@@ -3,10 +3,11 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
+from scipy import stats
 
 # --- КОНФИГУРАЦИЯ СТРАНИЦЫ ---
 st.set_page_config(
-    page_title="Калькулятор RC для ПЭТ",
+    page_title="Калькулятор коэффициента восстановления для ПЭТ",
     page_icon="🔬",
     layout="wide"
 )
@@ -71,7 +72,7 @@ def calculate_rc(diameter, tbr):
 
 
 # --- БОКОВАЯ ПАНЕЛЬ ---
-st.sidebar.header("📥 Параметры очага")
+st.sidebar.header("📥 Диаметр патологического очага")
 st.sidebar.markdown("Введите параметры для расчета коэффициента восстановления (RC).")
 
 d_input = st.sidebar.slider(
@@ -79,11 +80,11 @@ d_input = st.sidebar.slider(
     min_value=10.0,
     max_value=37.0,
     value=22.0,
-    step=0.5
+    step=0.1
 )
 
 tbr_input = st.sidebar.number_input(
-    "Практическое TBR (TBR_prakt)",
+    "Практическое соотношение объёмных активностей очаг/фон TBR",
     min_value=0.0,
     max_value=25.0,
     value=8.0,
@@ -110,7 +111,7 @@ with col2:
         mode="gauge+number",
         value=rc_result,
         domain={'x': [0, 1], 'y': [0, 1]},
-        title={'text': "Качество восстановления", 'font': {'size': 24}},
+        title={'text': "Коэффициент восстановления", 'font': {'size': 24}},
         gauge={
             'axis': {'range': [None, 1]},
             'bar': {'color': "darkblue"},
@@ -166,7 +167,24 @@ with tab2:
 
     df['RC_pred'] = df.apply(lambda row: calculate_rc(row['d'], row['TBR_prakt']), axis=1)
 
-    # ИСПРАВЛЕНО: убран color_continuous_scale, добавлен color_discrete_sequence
+    # === РАСЧЁТ МЕТРИК КАЧЕСТВА МОДЕЛИ ===
+    df['Error'] = abs(df['RC'] - df['RC_pred'])  # Абсолютная погрешность
+    df['Rel_Error'] = (df['Error'] / df['RC']) * 100  # Относительная погрешность (%)
+
+    # Коэффициент корреляции Пирсона (R)
+    r_value, p_value = stats.pearsonr(df['RC'], df['RC_pred'])
+
+    # Коэффициент детерминации (R²)
+    ss_res = ((df['RC'] - df['RC_pred']) ** 2).sum()
+    ss_tot = ((df['RC'] - df['RC'].mean()) ** 2).sum()
+    r_squared = 1 - (ss_res / ss_tot)
+
+    # Остальные метрики
+    mae = df['Error'].mean()
+    mre = df['Rel_Error'].mean()
+    rmse = np.sqrt(((df['RC'] - df['RC_pred']) ** 2).mean())
+
+    # === ГРАФИК С R² НА ГРАФИКЕ ===
     fig_scatter = px.scatter(df, x='RC', y='RC_pred',
                              trendline="ols",
                              labels={'RC': 'Фактический RC', 'RC_pred': 'Предсказанный RC'},
@@ -177,11 +195,98 @@ with tab2:
     fig_scatter.add_shape(type="line", line=dict(dash="dash", color="black"),
                           x0=0, y0=0, x1=1, y1=1)
 
+    # Добавляем текст с метриками на график
+    fig_scatter.add_annotation(
+        text=f"R² = {r_squared:.4f}<br>R = {r_value:.4f}",
+        xref="paper", yref="paper",
+        x=0.02, y=0.98,
+        showarrow=False,
+        bgcolor="white",
+        bordercolor="black",
+        borderwidth=1,
+        font=dict(size=14)
+    )
+
     st.plotly_chart(fig_scatter, use_container_width=True)
 
-    df['Error'] = abs(df['RC'] - df['RC_pred'])
-    st.write(f"Средняя абсолютная ошибка (MAE): **{df['Error'].mean():.4f}**")
-    st.dataframe(df[['d', 'TBR_prakt', 'RC', 'RC_pred', 'Error']].style.format("{:.4f}"))
+    # === МЕТРИКИ КАЧЕСТВА МОДЕЛИ ===
+    st.markdown("### 📊 Метрики качества модели")
+
+    col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+
+    with col_m1:
+        st.metric("Коэффициент корреляции (R)", f"{r_value:.4f}")
+
+    with col_m2:
+        st.metric("Коэффициент детерминации (R²)", f"{r_squared:.4f}")
+
+    with col_m3:
+        st.metric("Средняя абсолютная ошибка (MAE)", f"{mae:.4f}")
+
+    with col_m4:
+        st.metric("Средняя относит. погрешность (MRE)", f"{mre:.2f}%")
+
+    with col_m5:
+        st.metric("Среднеквадратичная ошибка (RMSE)", f"{rmse:.4f}")
+
+    # === ИНТЕРПРЕТАЦИЯ МЕТРИК ===
+    st.markdown("### 📋 Интерпретация метрик")
+
+    col_i1, col_i2 = st.columns(2)
+
+    with col_i1:
+        st.info("**Коэффициент корреляции Пирсона (R):**")
+        st.write(f"Значение: **{r_value:.4f}**")
+        if r_value >= 0.9:
+            st.success("✅ Очень сильная связь между фактическими и предсказанными значениями")
+        elif r_value >= 0.7:
+            st.warning("⚠️ Сильная связь")
+        else:
+            st.error("❌ Средняя или слабая связь")
+
+    with col_i2:
+        st.info("**Коэффициент детерминации (R²):**")
+        st.write(f"Значение: **{r_squared:.4f}**")
+        st.write(f"Модель объясняет **{r_squared * 100:.1f}%** дисперсии данных")
+        if r_squared >= 0.8:
+            st.success("✅ Отличная точность модели")
+        elif r_squared >= 0.6:
+            st.warning("⚠️ Хорошая точность модели")
+        else:
+            st.error("❌ Требуется улучшение модели")
+
+    st.markdown("### 📋 Таблица погрешностей по экспериментам")
+
+    styled_df = df[['d', 'TBR_prakt', 'RC', 'RC_pred', 'Error', 'Rel_Error']].copy()
+    styled_df.columns = ['d (мм)', 'TBR_prakt', 'RC факт', 'RC предск', 'Δ абсолютная', 'Δ относительная (%)']
+
+    st.dataframe(
+        styled_df.style.format({
+            'd (мм)': '{:.0f}',
+            'TBR_prakt': '{:.1f}',
+            'RC факт': '{:.4f}',
+            'RC предск': '{:.4f}',
+            'Δ абсолютная': '{:.4f}',
+            'Δ относительная (%)': '{:.2f}%'
+        }),
+        use_container_width=True
+    )
+
+    # Статистика погрешностей
+    st.markdown("### 📊 Статистика погрешностей")
+    col_s1, col_s2 = st.columns(2)
+
+    with col_s1:
+        st.write("**Абсолютная погрешность:**")
+        st.write(f"- Мин: {df['Error'].min():.4f}")
+        st.write(f"- Макс: {df['Error'].max():.4f}")
+        st.write(f"- Среднее: {df['Error'].mean():.4f}")
+
+    with col_s2:
+        st.write("**Относительная погрешность:**")
+        st.write(f"- Мин: {df['Rel_Error'].min():.2f}%")
+        st.write(f"- Макс: {df['Rel_Error'].max():.2f}%")
+        st.write(f"- Среднее: {df['Rel_Error'].mean():.2f}%")
 
 with tab3:
     st.subheader("Методология расчёта")
@@ -203,6 +308,15 @@ with tab3:
     - Диаметр очага: 10 – 37 мм
     - TBR: 2 – 20
     - Экстраполяция за пределы данных не рекомендуется.
+
+    **Метрики качества модели:**
+    | Метрика | Описание | Оценка |
+    |---------|----------|--------|
+    | **R (Пирсон)** | Коэффициент корреляции | 0.95+ = отлично |
+    | **R²** | Доля объяснённой дисперсии | 0.80+ = отлично |
+    | **MAE** | Средняя абсолютная ошибка | Чем меньше, тем лучше |
+    | **MRE** | Средняя относительная погрешность | <10% = отлично |
+    | **RMSE** | Среднеквадратичная ошибка | Чувствительна к выбросам |
     """)
 
     st.download_button(
