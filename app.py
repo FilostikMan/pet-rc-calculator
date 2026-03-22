@@ -12,8 +12,6 @@ st.set_page_config(
 )
 
 # --- ДАННЫЕ И МОДЕЛЬ ---
-# Коэффициенты полиномиальной регрессии 2-й степени (из предыдущего анализа)
-# RC = intercept + c1*d + c2*t + c3*d^2 + c4*d*t + c5*t^2
 MODEL_PARAMS = {
     'intercept': -0.3116984512,
     'c_d': 0.0617471346,
@@ -23,7 +21,6 @@ MODEL_PARAMS = {
     'c_t2': -0.0014192538
 }
 
-# Исходные данные для графиков валидации
 DATA_RAW = """
 d,TBR_teor,TBR_prakt,RC
 37,6,5.69029069280389,0.993917244
@@ -70,10 +67,10 @@ def calculate_rc(diameter, tbr):
           p['c_d2'] * (diameter ** 2) +
           p['c_dt'] * diameter * tbr +
           p['c_t2'] * (tbr ** 2))
-    return max(0.0, min(1.0, rc))  # Ограничение 0-1
+    return max(0.0, min(1.0, rc))
 
 
-# --- БОКОВАЯ ПАНЕЛЬ (ВВОД ДАННЫХ) ---
+# --- БОКОВАЯ ПАНЕЛЬ ---
 st.sidebar.header("📥 Параметры очага")
 st.sidebar.markdown("Введите параметры для расчета коэффициента восстановления (RC).")
 
@@ -109,7 +106,6 @@ with col1:
     st.metric(label="Расчётный RC", value=f"{rc_result:.4f}")
 
 with col2:
-    # Визуализация в виде спидометра
     fig_gauge = go.Figure(go.Indicator(
         mode="gauge+number",
         value=rc_result,
@@ -145,7 +141,6 @@ tab1, tab2, tab3 = st.tabs(["📊 Графики зависимости", "📈 
 with tab1:
     st.subheader("Зависимость RC от диаметра и TBR")
 
-    # Генерация сетки для поверхности
     d_range = np.linspace(10, 37, 50)
     t_range = np.linspace(2, 20, 50)
     D, T = np.meshgrid(d_range, t_range)
@@ -154,17 +149,14 @@ with tab1:
     col_g1, col_g2 = st.columns(2)
 
     with col_g1:
-        # 3D Поверхность
         fig_3d = go.Figure(data=[go.Surface(z=Z, x=D, y=T, colorscale='Viridis')])
         fig_3d.update_layout(title='3D Поверхность отклика',
                              scene=dict(xaxis_title='Диаметр (мм)', yaxis_title='TBR', zaxis_title='RC'))
         st.plotly_chart(fig_3d, use_container_width=True)
 
     with col_g2:
-        # Тепловая карта (Contour)
         fig_contour = go.Figure(data=go.Contour(z=Z, x=d_range, y=t_range, colorscale='Viridis'))
         fig_contour.update_layout(title='Тепловая карта RC', xaxis_title='Диаметр (мм)', yaxis_title='TBR')
-        # Добавим точку текущего расчета
         fig_contour.add_trace(go.Scatter(x=[d_input], y=[tbr_input], mode='markers', marker=dict(color='red', size=15),
                                          name='Текущий расчет'))
         st.plotly_chart(fig_contour, use_container_width=True)
@@ -172,23 +164,21 @@ with tab1:
 with tab2:
     st.subheader("Сравнение фактических и предсказанных значений")
 
-    # Расчет предсказаний для исходных данных
     df['RC_pred'] = df.apply(lambda row: calculate_rc(row['d'], row['TBR_prakt']), axis=1)
 
-    # Scatter plot
+    # ИСПРАВЛЕНО: убран color_continuous_scale, добавлен color_discrete_sequence
     fig_scatter = px.scatter(df, x='RC', y='RC_pred',
                              trendline="ols",
                              labels={'RC': 'Фактический RC', 'RC_pred': 'Предсказанный RC'},
                              title='Фактические vs Предсказанные значения',
-                             color='d', color_continuous_scale='Plasma')
+                             color='d',
+                             color_discrete_sequence=px.colors.sequential.Plasma)
 
-    # Линия идеального совпадения
     fig_scatter.add_shape(type="line", line=dict(dash="dash", color="black"),
                           x0=0, y0=0, x1=1, y1=1)
 
     st.plotly_chart(fig_scatter, use_container_width=True)
 
-    # Таблица ошибок
     df['Error'] = abs(df['RC'] - df['RC_pred'])
     st.write(f"Средняя абсолютная ошибка (MAE): **{df['Error'].mean():.4f}**")
     st.dataframe(df[['d', 'TBR_prakt', 'RC', 'RC_pred', 'Error']].style.format("{:.4f}"))
@@ -222,6 +212,5 @@ with tab3:
         mime="text/csv",
     )
 
-# Footer
 st.markdown("---")
-st.caption("Разработано для дипломной работы. Модель обучена на данных фантома NEMA IU.")
+st.caption("Разработано для дипломной работы. Модель обучена на данных фантома NEMA.")
